@@ -1,0 +1,205 @@
+```python
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+import requests
+import csv
+import threading
+import re
+
+class ExtratorOpenAlexApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Extrator Avançado - OpenAlex (Nome, ORCID, ID)")
+        self.root.geometry("950x600")
+        self.root.configure(padx=10, pady=10)
+
+        # Frame superior para entrada de dados
+        input_frame = tk.Frame(self.root)
+        input_frame.pack(fill=tk.X, pady=(0, 10))
+
+        lbl_instrucoes = (
+            "Insira os dados (um por linha).\n"
+            "O sistema aceita automaticamente: Nomes Completos, ORCIDs (ex: 0000-0001-...) ou IDs OpenAlex (ex: A1234...)"
+        )
+        tk.Label(input_frame, text=lbl_instrucoes, font=("Arial", 10, "bold"), justify=tk.LEFT).pack(anchor=tk.W)
+        
+        self.text_area = tk.Text(input_frame, height=8, width=50)
+        self.text_area.pack(fill=tk.X, pady=5)
+
+        # Botões de ação
+        btn_frame = tk.Frame(self.root)
+        btn_frame.pack(fill=tk.X, pady=(0, 10))
+
+        self.btn_buscar = tk.Button(btn_frame, text="Iniciar Busca Inteligente", command=self.iniciar_busca, bg="#4CAF50", fg="white", font=("Arial", 10, "bold"))
+        self.btn_buscar.pack(side=tk.LEFT, padx=(0, 10))
+
+        self.btn_exportar = tk.Button(btn_frame, text="Exportar para CSV", command=self.exportar_csv, state=tk.DISABLED)
+        self.btn_exportar.pack(side=tk.LEFT)
+        
+        self.lbl_status = tk.Label(btn_frame, text="Aguardando inserção de dados...", fg="blue")
+        self.lbl_status.pack(side=tk.RIGHT)
+
+        # Tabela (Treeview) para mostrar os resultados
+        columns = ("Tipo Entrada", "Dado Inserido", "Nome OpenAlex", "ORCID", "Trabalhos", "Citações", "Índice H")
+        self.tree = ttk.Treeview(self.root, columns=columns, show="headings", height=15)
+        
+        # Configurar cabeçalhos e colunas
+        for col in columns:
+            self.tree.heading(col, text=col)
+            
+        self.tree.column("Tipo Entrada", width=90, anchor=tk.CENTER)
+        self.tree.column("Dado Inserido", width=150, anchor=tk.W)
+        self.tree.column("Nome OpenAlex", width=150, anchor=tk.W)
+        self.tree.column("ORCID", width=120, anchor=tk.CENTER)
+        self.tree.column("Trabalhos", width=80, anchor=tk.CENTER)
+        self.tree.column("Citações", width=80, anchor=tk.CENTER)
+        self.tree.column("Índice H", width=80, anchor=tk.CENTER)
+
+        # Adicionar barra de rolagem
+        scrollbar = ttk.Scrollbar(self.root, orient=tk.VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscroll=scrollbar.set)
+        
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tree.pack(fill=tk.BOTH, expand=True)
+
+        self.resultados = []
+
+    def identificar_tipo_entrada(self, linha):
+        """Usa Expressões Regulares para descobrir se é ORCID, ID OpenAlex ou Nome"""
+        linha_limpa = linha.strip()
+        
+        # Busca padrão ORCID (ex: 0000-0002-1825-0097)
+        orcid_match = re.search(r'(\d{4}-\d{4}-\d{4}-\d{3}[\dX])', linha_limpa, re.IGNORECASE)
+        if (orcid_match):
+            return "ORCID", orcid_match.group(1)
+            
+        # Busca padrão OpenAlex Author ID (ex: A5023888391)
+        openalex_match = re.search(r'(A\d{5,})', linha_limpa, re.IGNORECASE)
+        if (openalex_match):
+            return "OpenAlex ID", openalex_match.group(1).upper()
+            
+        # Se não tiver padrão específico, considera nome
+        return "Nome", linha_limpa
+
+    def iniciar_busca(self):
+        self.btn_buscar.config(state=tk.DISABLED)
+        self.btn_exportar.config(state=tk.DISABLED)
+        
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        self.resultados.clear()
+
+        texto = self.text_area.get("1.0", tk.END).strip()
+        if not texto:
+            messagebox.showwarning("Aviso", "Por favor, insira dados na caixa de texto.")
+            self.btn_buscar.config(state=tk.NORMAL)
+            return
+
+        linhas = [linha.strip() for linha in texto.split('\n') if linha.strip()]
+        
+        threading.Thread(target=self.processar_linhas, args=(linhas,), daemon=True).start()
+
+    def processar_linhas(self, linhas):
+        total = len(linhas)
+        
+        for index, linha in enumerate(linhas):
+            tipo, valor = self.identificar_tipo_entrada(linha)
+            self.atualizar_status(f"Processando {index + 1}/{total} [{tipo}]: {valor}")
+            
+            dados = self.consultar_openalex(tipo, valor)
+            
+            if dados:
+                self.resultados.append(dados)
+                self.root.after(0, self.tree.insert, "", tk.END, None, tuple(dados.values()))
+            else:
+                dados_vazios = {
+                    "tipo": tipo, "inserido": valor, 
+                    "encontrado": "Não encontrado", "orcid": "-", 
+                    "obras": 0, "citacoes": 0, "h_index": 0
+                }
+                self.resultados.append(dados_vazios)
+                self.root.after(0, self.tree.insert, "", tk.END, None, tuple(dados_vazios.values()))
+
+        self.atualizar_status("Busca concluída com sucesso!")
+        self.root.after(0, lambda: self.btn_buscar.config(state=tk.NORMAL))
+        if self.resultados:
+            self.root.after(0, lambda: self.btn_exportar.config(state=tk.NORMAL))
+
+    def consultar_openalex(self, tipo, valor):
+        """Faz a requisição para a API correta dependendo do tipo identificado"""
+        headers = {"User-Agent": "mailto:seuemail@instituicao.br"} 
+        
+        try:
+            if tipo == "ORCID":
+                # Endpoint direto para ORCID
+                url = f"https://api.openalex.org/authors/https://orcid.org/{valor}"
+                response = requests.get(url, headers=headers, timeout=10)
+                if response.status_code == 200:
+                    autor = response.json()
+                    return self._formatar_autor(tipo, valor, autor)
+                    
+            elif tipo == "OpenAlex ID":
+                # Endpoint direto para ID OpenAlex
+                url = f"https://api.openalex.org/authors/{valor}"
+                response = requests.get(url, headers=headers, timeout=10)
+                if response.status_code == 200:
+                    autor = response.json()
+                    return self._formatar_autor(tipo, valor, autor)
+                    
+            elif tipo == "Nome":
+                # Endpoint de busca (Search) para Nomes
+                url = "https://api.openalex.org/authors"
+                params = {"search": valor, "per-page": 1}
+                response = requests.get(url, params=params, headers=headers, timeout=10)
+                if response.status_code == 200:
+                    data = response.json()
+                    if data.get("results") and len(data["results"]) > 0:
+                        autor = data["results"][0]
+                        return self._formatar_autor(tipo, valor, autor)
+        except Exception as e:
+            print(f"Erro ao buscar {valor}: {e}")
+            
+        return None
+
+    def _formatar_autor(self, tipo, valor, autor):
+        """Formata o JSON retornado pela API para o padrão da nossa tabela"""
+        # Limpar URL do ORCID para mostrar apenas os números, se houver
+        orcid_limpo = autor.get("orcid", "-")
+        if orcid_limpo and "orcid.org/" in orcid_limpo:
+            orcid_limpo = orcid_limpo.split("orcid.org/")[1]
+
+        return {
+            "tipo": tipo,
+            "inserido": valor,
+            "encontrado": autor.get("display_name", "-"),
+            "orcid": orcid_limpo,
+            "obras": autor.get("works_count", 0),
+            "citacoes": autor.get("cited_by_count", 0),
+            "h_index": autor.get("summary_stats", {}).get("h_index", 0)
+        }
+
+    def atualizar_status(self, mensagem):
+        self.root.after(0, lambda: self.lbl_status.config(text=mensagem))
+
+    def exportar_csv(self):
+        if not self.resultados: return
+        filepath = filedialog.asksaveasfilename(
+            defaultextension=".csv", filetypes=[("Arquivos CSV", "*.csv")],
+            title="Salvar resultados como..."
+        )
+        if not filepath: return
+        try:
+            with open(filepath, mode='w', newline='', encoding='utf-8-sig') as file:
+                writer = csv.writer(file, delimiter=';')
+                writer.writerow(["Tipo Pesquisa", "Dado Inserido", "Nome Encontrado (OpenAlex)", "ORCID", "Quantidade de Obras", "Total de Citações", "Índice H"])
+                for linha in self.resultados:
+                    writer.writerow([linha.get("tipo"), linha.get("inserido"), linha.get("encontrado"), linha.get("orcid"), linha.get("obras"), linha.get("citacoes"), linha.get("h_index")])
+            messagebox.showinfo("Sucesso", f"Arquivo salvo em:\n{filepath}")
+        except Exception as e:
+            messagebox.showerror("Erro", f"Ocorreu um erro ao salvar o arquivo:\n{e}")
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = ExtratorOpenAlexApp(root)
+    root.mainloop()
+```
