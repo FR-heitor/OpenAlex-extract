@@ -86,4 +86,4 @@ Por esse motivo, o aplicativo gera a tabela "X. ATIVIDADE DOCENTE" estruturada n
 ---
 
 ## 📄 Licença
-Este projeto é distribuído sob a licença MIT - veja o arquivo [LICENSE](LICENSE) para mais detalhes. Versão aberta para uso livre pela comunidade acadêmica brasileira.
+Este projeto é distribuído sob a licença GNU - veja o arquivo [LICENSE](LICENSE) para mais detalhes. Versão aberta para uso livre pela comunidade acadêmica brasileira.
